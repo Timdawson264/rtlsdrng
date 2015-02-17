@@ -38,22 +38,18 @@
 
   </head>
   <body class="container-fluid"> 
-
-    <table id="dongle_tbl" class="table table-hover" style="width:50%; float: left;" >
-            <tr><th>Name</th><th>Tuner</th><th>Serial</th></tr>
-    </table>
-
-    <table id="freq_tbl" class="table table-hover text-center" style="width:50%;" >
-            <tr><th>Frequency</th><th>Modulator</th><th>Squalch</th><th>Gain</th></tr>  
-    </table>
-
-    <div>
-        <form id="dongle_add" class="form-group form-group-sm" style="width:50%;">
-           
-        </form>
+    <div class="dongle_table"  style="width:100%; padding:3px;">
+        <table id="dongle_tbl" class="table table-hover" style="border: 2px solid black;">
+                <tr><th>Name</th><th>Tuner</th><th>Serial</th></tr>
+        </table>
+    </div>
+    <div class="freq_table"  style="width:50%; padding:3px; float: right;">
+        <table id="freq_tbl" class="table table-hover text-center" style="border: 2px solid black;">
+                <tr><th>Index</th><th>Frequency</th><th>Modulator</th><th>Squalch</th><th>Gain</th></tr>  
+        </table>
     </div>
 
-    <div>
+    <div class="freq_form">
         <form id="freq_add" class="form-group form-group-sm" style="width:50%; float:right">
 
             <label for="freq" class="col-sm-2 control-label" >Frequency</label>
@@ -76,18 +72,19 @@
             
             <label for="squalch" class="col-sm-2 control-label" >Squalch</label>
             <div>
-                <input name="squalch" type="number" class="form-control input-sm" style="width:auto">
+                <input name="squalch" type="number" class="form-control input-sm" style="width:auto" value="0">
             </div>
             
             <label for="gain" class="col-sm-2 control-label" >Gain</label>
             <div>
-                <input name="gain" type="number" class="form-control input-sm" style="width:auto">
+                <input name="gain" type="number" class="form-control input-sm" style="width:auto" value="100">
             </div>
 
-            <button id="freq_add_btn" type="button"  data-loading-text="Pending..." class="btn btn-primary" autocomplete="off">ADD </button>
+            
         </form>
+        <button id="freq_add_btn" type="button"  data-loading-text="Pending..." class="btn btn-primary" autocomplete="off">ADD </button>
+        <button id="next_freq_btn"  onclick="next_freq();" type="button"  data-loading-text="Pending..." class="btn btn-primary" autocomplete="off">Freq Hop</button>
     </div>
-
 
     <script type="text/javascript">
         var jsonRPC;
@@ -114,7 +111,7 @@
 
         var state;
         function on_sync (result){
-                console.log(result);
+                //console.log(result);
                 state = result;
 
                 //Render New Dongle state
@@ -140,6 +137,7 @@
         }
 
         function render_freq_tbl(){
+            //use active_dongle to pick a table to render
             var serial = active_dongle;
             var idx;
             for(idx = 0; idx < state.length; idx++){
@@ -149,13 +147,32 @@
             //populate freq table
             $('#freq_tbl tr').not(':first').remove(); //dont remove header row
             var html = '';
+            var active = null;
             for(var i = 0; i < state[idx].freqs.length; i++){
-                var btn = '<button onclick="del_freq(this);" id="dongle_btn type="button" style="z-index:1000"  data-loading-text="Pending..." class="btn btn-danger btn-xs" autocomplete="off">Remove</button>'
-                html += '<tr><td>'+ state[idx].freqs[i].freq +'</td><td>'+ state[idx].freqs[i].mod +'</td><td>'+ state[idx].freqs[i].squalch +'</td><td>'+ state[idx].freqs[i].gain +'</td><td>' + btn + '</td></tr>';
+                if(state[idx].freqs[i].active==true) active=i;
+                var btn = '<button onclick="del_freq(' + i + ');" id="dongle_btn type="button" style="z-index:1000"  data-loading-text="Pending..." class="btn btn-danger btn-xs" autocomplete="off">Remove</button>'
+                html += '<tr><td>'+ i +'</td><td>'+ state[idx].freqs[i].freq +'</td><td>'+ state[idx].freqs[i].mod +'</td><td>'+ state[idx].freqs[i].squalch +'</td><td>'+ state[idx].freqs[i].gain +'</td><td>' + btn + '</td></tr>';
             }
+
+            //show currently tuned freq
             $('#freq_tbl tr').first().after(html);
+            if(active!=null){
+                $($('#freq_tbl tr')[active+1]).addClass('active').siblings().removeClass('active');
+            }
             
         }
+
+        function del_freq(idx){
+
+            console.log('deleting', active_dongle,  idx);
+            var params = {};
+            params.serial=active_dongle;
+            params.idx=idx;
+            jsonRPC.call('del_freq', params,
+                        function(result) { console.log('del_freq:',result); call_sync(); } ,
+                        function(error)  { console.log('There was an error', error); call_sync(); }
+            );
+        }   
 
         function render_dongle_tbl(){
            //populate dongle table
@@ -174,13 +191,22 @@
             $('#dongle_tbl tr').first().after(html);
         }
 
+        function next_freq(){
+            var params = {};
+            params.serial=active_dongle;
+            console.log('Next_freq()');
+            jsonRPC.call('next_freq', params,
+                        function(result) { console.log('next_freq:',result); call_sync(); } ,
+                        function(error)  { console.log('There was an error', error); call_sync(); }
+            );
+        }
         
         function close_dongle(event){
             var serial = event.parentNode.previousSibling.innerHTML;
             
             $(event).addClass('btn-warning').addClass('disabled').removeClass('btn-success'); //Make orange
             console.log('Opening', serial);
-            var params = {}
+            var params = {};
             params.serial=serial;
             jsonRPC.call('close', params,
                         function(result) { console.log('on_close:',result); call_sync(); } ,
@@ -204,6 +230,8 @@
         /* Set Active Dongle to list Frequancy table */
         var active_dongle = null; //serial of active dongle
         $('#dongle_tbl').on('click', 'tbody tr', function(event) {
+            if(this.cells[2].innerHTML == 'Serial')
+                return;
             active_dongle = this.cells[2].innerHTML;
             render_active_dongle();
             render_freq_tbl();
@@ -230,6 +258,9 @@
 
             $btn.button('reset');
         });
+
+        
+        
     </script>
   </body>
 </html>

@@ -41,6 +41,7 @@ extern "C" {
 
 /* more cond dumbness */
 #define safe_cond_signal(n, m) pthread_mutex_lock(m); pthread_cond_signal(n); pthread_mutex_unlock(m)
+#define safe_cond_broadcast(n, m) pthread_mutex_lock(m); pthread_cond_broadcast(n); pthread_mutex_unlock(m)
 #define safe_cond_wait(n, m) pthread_mutex_lock(m); pthread_cond_wait(n, m); pthread_mutex_unlock(m)
 
 static volatile int do_exit = 0;
@@ -58,7 +59,6 @@ typedef struct
 	char*		mod;
 	int	        squelch_level;
 	int		gain;
-        
 }scan_node;
 
 typedef struct controller_state
@@ -66,6 +66,7 @@ typedef struct controller_state
 	int      exit_flag;
 	pthread_t thread;
 	CirLinkList* freqs;
+        scan_node *  active_freq;
 	int      edge;
 	pthread_cond_t hop;
 	pthread_mutex_t hop_m;
@@ -79,7 +80,6 @@ typedef struct output_state
 	pthread_t thread;
 	FILE     *file;
 	char     *filename;
-        CirLinkList* http_clients; 
 	int16_t  result[MAXIMUM_BUF_LENGTH];
 	int      result_len;
 	int      rate;

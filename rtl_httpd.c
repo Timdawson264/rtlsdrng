@@ -42,6 +42,10 @@
 
 #include "web_include/web_include.h"
 
+//fft
+#include <complex.h>
+#include <fftw3.h>
+
 //sdr
 #include <math.h>
 #include <pthread.h>
@@ -57,7 +61,6 @@
 
 static const char * jsonrpc_parse_err = "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32700, \"message\": \"Parse error\"}, \"id\": null}";
 
-static void* output_http_thread_fn( void* arg );
 static void *controller_thread_fn(void *arg);
 static void *demod_thread_fn(void *arg);
 static void *dongle_thread_fn(void *arg);
@@ -85,6 +88,13 @@ typedef struct {
   demod_state* dm_state; //Demod thread state
   controller_state* con_state; //Controler thread state
   dongle_state* dong_state; //Dongle Thread state
+
+  /* Sox transcoder */
+  uint8_t * sox_buf;
+  int64_t sox_len;
+  pthread_cond_t sox_ready;
+	pthread_mutex_t sox_ready_m;
+  pthread_rwlock_t sox_rw;
   
 } dongle_t;
 
@@ -130,35 +140,6 @@ dongle_t* dongle_add( char* serial )
   //Add to list of dongles
   CirLinkList_push( Dongles, d );
   return d;
-}
-
-void json_response( onion_response* res, onion_dict* jreq, char* json_result )
-{
-  onion_dict* jres = onion_dict_new(); //response dict
-
-  /// Prepare message
-  onion_dict_add( jres, "jsonrpc", "2.0", 0 );
-  onion_dict_add( jres, "id", onion_dict_get( jreq, "id" ), 0 );
-
-  if( json_result ) {
-    onion_dict_add( jres, "result", json_result, OD_DUP_VALUE );
-
-  } else {
-    onion_dict* err = onion_dict_new();
-    onion_dict_add( err, "code", "-32602" , 0 );
-    onion_dict_add( err, "message", "Invalid params", 0 );
-    onion_dict_add( jres, "error", err, ( OD_DICT | OD_FREE_VALUE ) );
-  }
-
-  onion_block* jresb = onion_dict_to_json( jres );
-  //ONION_INFO( onion_block_data( jresb ) );
-  onion_response_write( res,  onion_block_data( jresb ),
-                        onion_block_size( jresb ) );
-
-  //cleanup
-  onion_block_free( jresb );
-  onion_dict_free( jres );
-
 }
 
 //turn enum into str
@@ -207,6 +188,7 @@ struct json_object * rpc_sync(struct json_object * req_obj){
     json_object_object_add ( dongle_obj, "name", json_object_new_string(rtlsdr_get_device_name( x )) );
     json_object_object_add ( dongle_obj, "serial", json_object_new_string(buf) );
     json_object_object_add ( dongle_obj, "tuner", json_object_new_string(rlsdr_tuner_str( dongle->tuner )) );
+
     
     //TODO: Thraed Safety -dongle
     if( dongle->dong_state->dev ) { //check opened and not lost
@@ -221,10 +203,20 @@ struct json_object * rpc_sync(struct json_object * req_obj){
     struct json_object* freqs_obj = json_object_new_array();
     uint16_t f;
     //TODO: Thread Saftey - controller
+    
     for( f = 0; f < dongle->con_state->freqs->size; f++ ) {
       scan_node* sn = CirLinkList_get( dongle->con_state->freqs, f );
+      if(!sn){
+        fprintf(stderr,"Freqs err sn null; %u\n", f);
+      }
       if( sn ) {
         struct json_object* freq_obj =  json_object_new_object();
+        
+        if(sn == dongle->con_state->active_freq){
+          json_object_object_add ( freq_obj, "active", json_object_new_boolean(TRUE));
+        }else{
+          json_object_object_add ( freq_obj, "active", json_object_new_boolean(FALSE));
+        }
         
         sprintf( buf, "%u", sn->freq );
         json_object_object_add ( freq_obj, "freq", json_object_new_string(buf) );
@@ -258,30 +250,35 @@ struct json_object * rpc_sync(struct json_object * req_obj){
 /* Set RPC Functions */
 
 //Adds a frequancy to the scanning list
-int add_freq( onion_dict* jreq )
-{
-
-
+struct json_object * add_freq( struct json_object * req_obj ){
+  
   //extract variables
+  json_object * params_obj, * value_obj; 
+  json_object_object_get_ex(req_obj , "params", &params_obj);
+  
+  fprintf(stderr,"freq_add: %s\n",json_object_to_json_string(params_obj));
+
   //freq, modulation, squlch level, gain - and dongles serial number
-  const char* dongle_serial = onion_dict_rget( jreq, "params", "serial", NULL );
-  const char* freq = onion_dict_rget( jreq, "params", "freq", NULL );
-  const char* mod = onion_dict_rget( jreq, "params", "mod", NULL );
-  const char* squalch = onion_dict_rget( jreq, "params", "squalch", NULL );
-  const char* gain =  onion_dict_rget( jreq, "params", "gain", NULL );
+  json_object_object_get_ex(params_obj, "serial", &value_obj);
+  const char* dongle_serial = json_object_get_string(value_obj);
+  json_object_object_get_ex(params_obj, "freq", &value_obj);
+  const char* freq = json_object_get_string(value_obj);
+  json_object_object_get_ex(params_obj, "mod", &value_obj);
+  const char* mod = json_object_get_string(value_obj);
+  json_object_object_get_ex(params_obj, "squalch", &value_obj);
+  const char* squalch = json_object_get_string(value_obj);
+  json_object_object_get_ex(params_obj, "gain", &value_obj);
+  const char* gain = json_object_get_string(value_obj);
 
-  ONION_INFO( "ADD_FREQ: freq: %s, mod: %s, squalch: %s, gain: %s, serial: %s\n",
-              freq, mod,
-              squalch, gain, dongle_serial );
-
+  
   if( !freq || !mod || !squalch || !gain || !dongle_serial ) {
     //an option is null
-    return 1;
+    return NULL;
   }
 
   dongle_t* d = dongle_get_by_serial( ( char* )dongle_serial );
   if( !d ) {
-    return 1;  //TODO: Dongle Does not Exsits
+    return NULL;  //TODO: Dongle Does not Exsits
   }
 
   scan_node* sn = ( scan_node* ) malloc( sizeof( scan_node ) );
@@ -296,31 +293,87 @@ int add_freq( onion_dict* jreq )
   //TODO: thread saftey - controller
   CirLinkList_push( d->con_state->freqs, sn );
 
-  return 0;
+  //TODO: return ok
+  return NULL;
 }
 
-//Adds a frequancy to the scanning list
-int open_dongle( onion_dict* jreq )
+struct json_object * del_freq( struct json_object * req_obj ){
+
+  //extract variables
+  json_object * params_obj, * value_obj; 
+  json_object_object_get_ex(req_obj , "params", &params_obj);
+  
+  fprintf(stderr,"del_freq: %s\n",json_object_to_json_string(params_obj));
+
+  json_object_object_get_ex(params_obj, "serial", &value_obj);
+  const char* dongle_serial = json_object_get_string(value_obj);
+  json_object_object_get_ex(params_obj, "idx", &value_obj);
+  const char* idx = json_object_get_string(value_obj);
+  
+  if( !dongle_serial || !idx ) {
+    //an option is null
+    return NULL;
+  }
+
+  dongle_t* d = dongle_get_by_serial( ( char* )dongle_serial );
+  if( !d ) {
+    return NULL;  //TODO: Dongle Does not Exsits
+  }
+
+  //TODO: thread saftey - controller
+  CirLinkList_del( d->con_state->freqs, atoi(idx) );
+  //TODO: return ok;
+  return NULL;
+
+}
+
+struct json_object * next_freq( struct json_object * req_obj ){
+   //extract variables
+  json_object * params_obj, * value_obj; 
+  json_object_object_get_ex(req_obj , "params", &params_obj);
+  fprintf(stderr,"next_freq: %s\n",json_object_to_json_string(params_obj));
+  
+  json_object_object_get_ex(params_obj, "serial", &value_obj);
+  const char* dongle_serial = json_object_get_string(value_obj);
+  
+  if( !dongle_serial) {
+    //an option is null
+    return NULL;
+  }
+  dongle_t* d = dongle_get_by_serial( ( char* )dongle_serial );
+  if( !d ) {
+    return NULL;  //TODO: Dongle Does not Exsits
+  }
+
+  safe_cond_signal(&d->con_state->hop, &d->con_state->hop_m);
+  return NULL;
+}
+
+struct json_object * open_dongle ( struct json_object * req_obj )
 {
   //extract variables
-  const char* dongle_serial = onion_dict_rget( jreq, "params", "serial", NULL );
+  json_object * params_obj, * value_obj; 
+  json_object_object_get_ex(req_obj , "params", &params_obj);
+  
+  json_object_object_get_ex(params_obj, "serial", &value_obj);
+  const char* dongle_serial = json_object_get_string(value_obj);
+
   if( !dongle_serial ) {
     //an option is null
-    return 1;
+    return NULL;
   }
 
   dongle_t* d = dongle_get_by_serial( ( char* )dongle_serial );
   fprintf(stderr, "%s() get dongle by serial: %p, %s\n", __FUNCTION__, d, dongle_serial);
   if( !d ) {
     //no such dongle
-    return 1;
+    return NULL;
   }
   //TODO: Thraed Saftey - controller
   int r;
   int idx = rtlsdr_get_index_by_serial( dongle_serial );
   if( ( r = rtlsdr_open( &d->dong_state->dev, idx ) ) < 0 ) {
-    ONION_ERROR( "there was an issue %d\n", r );
-    return 1;
+    return NULL;
   }
   d->tuner = rtlsdr_get_tuner_type( d->dong_state->dev );
 
@@ -331,7 +384,7 @@ int open_dongle( onion_dict* jreq )
       serial = ( ( ( uint64_t )rand() << 32 ) | rand() ) % ( ( uint64_t )pow( 10,
                8 ) );
     }
-    ONION_INFO( "Changing Serial to: %08u", serial );
+    fprintf(stderr, "Changing Serial to: %08u", serial );
     //TODO: Write new serial number
   }
   
@@ -340,115 +393,17 @@ int open_dongle( onion_dict* jreq )
   //Start Dongle Threads
   pthread_create(&d->con_state->thread, NULL, controller_thread_fn, (void *)(d->dong_state));
 	sleep(.1);
-	pthread_create( &d->out_state->thread, NULL, output_http_thread_fn,
-                  ( void* )( d->dong_state ) );
+  //TODO: make output work with libmicrohttpd
+  //pthread_create( &d->out_state->thread, NULL, output_http_thread_fn, ( void* )( d->dong_state ) );
 	pthread_create(&d->dm_state->thread, NULL, demod_thread_fn, (void *)(d->dong_state));
 	pthread_create(&d->dong_state->thread, NULL, dongle_thread_fn, (void *)(d->dong_state));
 
   return 0;
 }
 
-//Removes a frequancy to the scanning list
-void rem_freq()
-{
-
-}
-
-//Tune to a frequancy  in the scanning list
-void set_freq()
-{
-
-}
-
-//Set options, Squelch, Squelch delay etc for exsiting freq.
-void update_freq()
-{
-
-}
-
-onion_connection_status json_parse( void* _, onion_request* req,
-                                    onion_response* res )
-{
-
-  const onion_block* dreq = onion_request_get_data( req );
-  onion_dict* jreq = NULL; //request dict
-
-
-  if ( dreq )
-    //ONION_INFO( onion_block_data(dreq) );
-  {
-    jreq = onion_dict_from_json( onion_block_data( dreq ) );
-  }
-  if ( jreq ) {
-    // safe_strcmp(onion_request_get_header(req, "content-type"), "application/json") // Not used in tinyrpc, not really mandatory
-
-    /// Check is the proper call.
-    if ( !safe_strcmp( onion_dict_get( jreq, "jsonrpc" ), "2.0" ) ) {
-      onion_response_write0( res,
-                             "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32700, \"message\": \"Parse error\"}, \"id\": null}" );
-      return OCS_PROCESSED;
-    }
-
-    if ( safe_strcmp( onion_dict_get( jreq, "method" ), "add_freq" ) ) {
-      //execute RPC
-      if( add_freq( jreq ) > 0 ) {
-        json_response( res, jreq, NULL );
-      } else {
-        json_response( res, jreq, "OK" );
-      }
-
-      return OCS_PROCESSED;
-    }
-
-    if ( safe_strcmp( onion_dict_get( jreq, "method" ), "open" ) ) {
-      //execute RPC
-      if( open_dongle( jreq ) > 0 ) {
-        json_response( res, jreq, NULL );
-      } else {
-        json_response( res, jreq, "OK" );
-      }
-
-      return OCS_PROCESSED;
-    }
-
-    if ( safe_strcmp( onion_dict_get( jreq, "method" ), "test" ) ) {
-      //json_response(res jreq, NULL);
-      json_response( res, jreq, "OK" );
-      return OCS_PROCESSED;
-    }
-
-
-    //fail
-    onion_response_printf( res,
-                           "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32601, \"message\": \"Method not found\"}, \"id\": \"%s\"}",
-                           onion_dict_get( jreq, "id" ) );
-    return OCS_PROCESSED;
-
-    /// Clean up.
-    onion_dict_free( jreq );
-    return OCS_PROCESSED;
-  } else {
-
-    onion_response_write0( res,
-                           "This is a JSON rpc service. Please send jsonrpc requests." );
-    return OCS_PROCESSED;
-  }
-
-}
-
-onion_connection_status css_handle( void* _, onion_request* req,
-                                    onion_response* res )
-{
-  onion_response_set_header( res, "Content-Type", "text/css" );
-  onion_response_set_length( res, css_all_len );
-  onion_response_write_headers( res );
-  onion_response_write0( res, ( char* )css_all );
-  return OCS_PROCESSED;
-}
-
 static void *controller_thread_fn(void *arg)
 {
-    //This is where the channel hopping should happen.
+  //This is where the channel hopping should happen.
   fprintf(stderr,"Dongle Thread Started\n");
 
 	uint64_t i;
@@ -461,17 +416,24 @@ static void *controller_thread_fn(void *arg)
     //TODO: Be smarter
 
     //TODO: Thread saftey on controller
-    scan_node* n = NULL;
-    while(n == NULL){
-      sleep(.1);
-      n = (scan_node*) CirLinkList_peek(s->freqs); //first frequancy
-    }
+    s->active_freq=NULL;
     fprintf(stderr,"Controller Thread Scanning\n");
+    
     while (!do_exit) {
+        /* Next Frequancy */
+        s->active_freq = (scan_node*) CirLinkList_inc(s->freqs);
+        dongle->mute = BUFFER_DUMP;
+
+        //if no freq
+        while(s->active_freq == NULL){
+          sleep(.1);
+          s->active_freq = (scan_node*) CirLinkList_peek(s->freqs); //first frequancy
+        }
+      
         fprintf(stderr, "Tuning To: freq: %u, mod: %s, squalch: %d, gain: %d\n",
-              n->freq, n->mod,
-              n->squelch_level, n->gain);
-        setdemod(demod, n->mod);
+              s->active_freq->freq, s->active_freq->mod,
+              s->active_freq->squelch_level, s->active_freq->gain);
+        setdemod(demod, s->active_freq->mod);
 
         if ( demod->deemph ) {
           demod->deemph_a = ( int )round( 1.0 / ( ( 1.0 - exp( -1.0 /
@@ -479,21 +441,21 @@ static void *controller_thread_fn(void *arg)
         }
 
         //Set Squlch
-        demod->squelch_level = n->squelch_level;
+        demod->squelch_level = s->active_freq->squelch_level;
 
         /* Set the tuner gain */
 
         /* Set Gain */
-        if (n->gain == AUTO_GAIN) {
+        if (s->active_freq->gain == AUTO_GAIN) {
             verbose_auto_gain(dongle->dev);
         } else {
-            n->gain = nearest_gain(dongle->dev, n->gain);
-            verbose_gain_set(dongle->dev, n->gain);
+            s->active_freq->gain = nearest_gain(dongle->dev, s->active_freq->gain);
+            verbose_gain_set(dongle->dev, s->active_freq->gain);
         }
         
         /* set up channel */
         
-        optimal_settings(n->freq, demod->rate_in, dongle);
+        optimal_settings(s->active_freq->freq, demod->rate_in, dongle);
         if (dongle->direct_sampling) {
             verbose_direct_sampling(dongle->dev, 1);
         }
@@ -502,7 +464,7 @@ static void *controller_thread_fn(void *arg)
         }
 
         /* Set the frequency */
-        if(strcmp("wbfm", n->mod) == 0 || strcmp("WBFM", n->mod) == 0){
+        if(strcasecmp("wbfm", s->active_freq->mod) == 0){
           verbose_set_frequency(dongle->dev, dongle->freq+16000);
         }else{
           verbose_set_frequency(dongle->dev, dongle->freq);
@@ -521,16 +483,11 @@ static void *controller_thread_fn(void *arg)
         if(do_exit) return 0;//just check before wait
         safe_cond_wait(&s->hop, &s->hop_m);
         fprintf(stderr,"Controller Thread Channel Hop\n");
-        if (s->freqs->size <= 1) {
-            continue;
-        }
-
-        /* Next Frequancy */
-        n = (scan_node*) CirLinkList_inc(s->freqs);
-        dongle->mute = BUFFER_DUMP;
+      
     }
     return 0;
 }
+
 
 static void *demod_thread_fn(void *arg)
 {
@@ -559,7 +516,7 @@ static void *demod_thread_fn(void *arg)
 		memcpy(o->result, d->result, 2*d->result_len);
 		o->result_len = d->result_len;
 		pthread_rwlock_unlock(&o->rw);
-		safe_cond_signal(&o->ready, &o->ready_m);
+		safe_cond_broadcast(&o->ready, &o->ready_m); //signal all threads waiting for output
 	}
 	return 0;
 }
@@ -686,11 +643,10 @@ static void* output_http_thread_fn( void* arg )
   assert(sox_add_effect(sox_chain, e, &interm_signal, &sox_out->signal) == SOX_SUCCESS);
   free(e);
 
-
   fprintf(stderr,"Sox Chain Opened\n");
-
   pthread_rwlock_unlock( &s->rw );
-  
+
+
   while ( !do_exit ) {
 
     /* Wait For Data */
@@ -698,64 +654,45 @@ static void* output_http_thread_fn( void* arg )
 
     /* Lock Output State for read */
     pthread_rwlock_rdlock( &s->rw );
-
     /* do SOX transcode - result data will be in sox_buffer*/
     sox_flow_effects(sox_chain, NULL, NULL);
-    ONION_INFO("WRITE: %u",2*s->result_len);
-    
-    //loop through clients and output result
-    for( i = 0; i < s->http_clients->size; i++ ) {
-      
-      onion_response* res = CirLinkList_get( s->http_clients, i);
-      //TODO implement response listenpoint call back to remove response from streaming when socket closed
-      //onion_response_write0( res , "Test Thread\n" );
-      
-      if(onion_response_flush(res) < 0 ||
-            onion_response_write( res , (const char *) s->result, 2*s->result_len) < 0){
-        ONION_ERROR("Error writing. Response closed");
-        CirLinkList_del( s->http_clients, i );
-      }
-      
-    }
-    
     pthread_rwlock_unlock( &s->rw );
+
+    //use cond to notify http callbacks that want ogg
 
   }
   return 0;
 }
-
-onion_connection_status output_handle( void* _, onion_request* req,
-                                       onion_response* res )
+//static ssize_t dir_reader (void *cls, uint64_t pos, char *buf, size_t max)
+ssize_t http_raw_output_stream_cb (void *cls, uint64_t pos, char *buf, size_t max)
 {
+  //cls should be ref to dongle_t
+  dongle_t* dongle = cls;
+  output_state* out = dongle->out_state;
+  
+  //TODO: if dongle off return -1
+  safe_cond_wait( &out->ready, &out->ready_m );
+  pthread_rwlock_rdlock( &out->rw );
+  memcpy(buf, out->result, out->result_len*2);
+  pthread_rwlock_unlock( &out->rw );
 
-  //select buffer based on url /dongle
-  const char* dongle_serial = onion_request_get_path( req ); //dongle number
-  ONION_INFO( "New output on %s", dongle_serial );
+  //return bytes copied 
+  return out->result_len*2;
+}
 
-  //onion_response_set_header(res, "Cache-Control", "no-cache" );//Set keep alive
-  //onion_response_set_header(res, "Content-Type", "application/octet-stream" ); // set mime type
+ssize_t http_ogg_output_stream_cb (void *cls, uint64_t pos, char *buf, size_t max)
+{
+  //cls should be ref to dongle_t
+  dongle_t* dongle = cls;
+  
+  //TODO: if dongle off return -1 - could use timeout
+  safe_cond_wait( &dongle->sox_ready, &dongle->sox_ready_m );
+  pthread_rwlock_rdlock( &dongle->sox_rw );
+  memcpy(buf, dongle->sox_buf, dongle->sox_len);
+  pthread_rwlock_unlock( &dongle->sox_rw );
 
-  onion_request_set_no_keep_alive(req);
-  onion_response_set_streaming( res );
-  onion_response_write_headers( res );
-
-  dongle_t* d = dongle_get_by_serial( ( char* ) dongle_serial );
-  if( d ) {
-    //Lock Dongle Output State
-    pthread_rwlock_wrlock( &d->out_state->rw );
-    CirLinkList_push( d->out_state->http_clients, res );
-    
-    ONION_INFO( "Number of clients for %s is %u", dongle_serial,
-                d->out_state->http_clients->size );
-    
-    pthread_rwlock_unlock( &d->out_state->rw );
-    sleep(1); //After here there is an error TODO: fix the error writing -1234 blocks
-    
-  } else {
-    ONION_ERROR( "Couldnt find dongle: %s", dongle_serial );
-    return OCS_INTERNAL_ERROR  ;
-  }
-  return OCS_STREAM ; //addedd to output keep open
+  //return bytes copied 
+  return dongle->sox_len;
 }
 
 const char * NOT_FOUND = "<h1> Not Found </h1>";
@@ -781,7 +718,19 @@ int response_handler (void *cls,
   if( tok && strcmp(tok, "out") == 0 ){
     tok = strtok_r(NULL, "/", &tok_state);
     if(tok){
-      fprintf(stderr, "out req - serial: %s\n", tok);
+      //tok is serial
+      dongle_t * d = dongle_get_by_serial( tok );
+      fprintf(stderr, "out req - serial: %s, dongle: %p\n", tok, d);
+      //create callback response that returns raw output buffer if dongle exsits
+      if(d){
+        tok = strtok_r(NULL, "/", &tok_state);
+        if(tok && strcmp(tok, "ogg") == 0){
+          //use ogg cb
+          res = MHD_create_response_from_callback(-1, 4096, &http_ogg_output_stream_cb, d, NULL);
+        }else{
+          res = MHD_create_response_from_callback(-1, 4096, &http_raw_output_stream_cb, d, NULL);
+        }
+      }
     }
   }
   if( tok && strcmp(tok, "web") == 0 ){
@@ -860,17 +809,24 @@ int response_handler (void *cls,
         json_object_object_add(res_obj, "id", id_obj);
 
         if(strcmp(json_object_get_string(value), "add_freq") == 0){
-          
+          json_object_object_add(res_obj, "result", add_freq(req_obj));
+        }
+        if(strcmp(json_object_get_string(value), "del_freq") == 0){
+          json_object_object_add(res_obj, "result", del_freq(req_obj));
+        }
+        if(strcmp(json_object_get_string(value), "next_freq") == 0){
+          json_object_object_add(res_obj, "result", next_freq(req_obj));
         }
         
         if(strcmp(json_object_get_string(value), "sync") == 0){
-          //add result
           json_object_object_add(res_obj, "result", rpc_sync(req_obj));
         }
         
         if(strcmp(json_object_get_string(value), "open") == 0){
-          
+          json_object_object_add(res_obj, "result", open_dongle(req_obj));
         }
+
+        
         //Method not found handler - no result == no method
         if(json_object_object_get_ex(res_obj, "result", NULL) == FALSE){
           struct json_object * error = json_object_new_object();

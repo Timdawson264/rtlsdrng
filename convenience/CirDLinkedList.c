@@ -61,7 +61,7 @@ void* CirLinkList_peek(CirLinkList* lst){
 
 //Increment Head to next node -- Used for scanning etc
 void* CirLinkList_inc(CirLinkList* lst){
-    fprintf(stderr, "CirLinkList size: %lu\n", lst->size);
+    
     //empty
     if(lst->head==NULL)
         return NULL;
@@ -132,7 +132,7 @@ void* CirLinkList_del(CirLinkList* lst, uint64_t idx){
         n=n->next;
     }
     //last node
-    if(n->next == n->prev){
+    if(n->next == n && n->prev == n){
         lst->head=NULL;
         lst->cur=NULL;
     }else{
@@ -144,8 +144,9 @@ void* CirLinkList_del(CirLinkList* lst, uint64_t idx){
     if(lst->cur  == n)  lst->cur=n->next;
     
     data = n->data;
+
+    lst->size--;
     free(n);
     
-    lst->size--;
     return data;
 }
