@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+      
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RTL_HTTPD</title>
+
+    <!-- download javascript and css-->
+    <script src="/web/js"></script>
+    <link rel="stylesheet" type="text/css" href="/web/css"> 
+
+    <script>
+        <!-- Turns form into Json -->
+        $.fn.toJSO = function () {
+            var obj = {},
+            $kids = $(this).children('[name]');
+            console.log( $(this) );
+            if (!$kids.length) {
+                return $(this).val();
+            }
+            $kids.each(function () {
+                var $el = $(this),
+                name = $el.attr('name');
+                if ($el.siblings("[name=" + name + "]").length) {
+                    if (!/radio|checkbox/i.test($el.attr('type')) || $el.prop('checked')) {
+                        obj[name] = obj[name] || [];
+                        obj[name].push($el.toJSO());
+                    }   
+                } else {
+                    obj[name] = $el.toJSO();
+                }
+            });
+            return obj;
+        }; 
+    </script>
+
+  </head>
+  <body class="container-fluid"> 
+
+    <table id="dongle_tbl" class="table table-hover" style="width:50%; float: left;" >
+            <tr><th>Name</th><th>Tuner</th><th>Serial</th></tr>
+    </table>
+
+    <table id="freq_tbl" class="table table-hover text-center" style="width:50%;" >
+            <tr><th>Frequency</th><th>Modulator</th><th>Squalch</th><th>Gain</th></tr>  
+    </table>
+
+    <div>
+        <form id="dongle_add" class="form-group form-group-sm" style="width:50%;">
+           
+        </form>
+    </div>
+
+    <div>
+        <form id="freq_add" class="form-group form-group-sm" style="width:50%; float:right">
+
+            <label for="freq" class="col-sm-2 control-label" >Frequency</label>
+            <div> 
+                <input name="freq" id="freq" type="number" class="form-control" style="width:auto" placeholder="Enter Frequancy in Hz"> 
+            </div>
+
+            
+            <label for="mod" class="col-sm-2 control-label" >Modulation</label>
+            <div>
+                <select name="mod" id="mod" class="form-control" style="width:auto">
+                    <option>FM</option>
+                    <option>WBFM</option>
+                    <option>AM</option>
+                    <option>USB</option>
+                    <option>LSB</option>
+                    <option>RAW</option>
+                </select>
+            </div>
+            
+            <label for="squalch" class="col-sm-2 control-label" >Squalch</label>
+            <div>
+                <input name="squalch" type="number" class="form-control input-sm" style="width:auto">
+            </div>
+            
+            <label for="gain" class="col-sm-2 control-label" >Gain</label>
+            <div>
+                <input name="gain" type="number" class="form-control input-sm" style="width:auto">
+            </div>
+
+            <button id="freq_add_btn" type="button"  data-loading-text="Pending..." class="btn btn-primary" autocomplete="off">ADD </button>
+        </form>
+    </div>
+
+
+    <script type="text/javascript">
+        var jsonRPC;
+        
+        $( document ).ready(function() {
+            console.log( "ready!" );
+            
+            jsonRPC = new $.JsonRpcClient({ ajaxUrl: '/json' });
+            call_sync();
+            
+            //auto update page
+            setInterval(function () {
+                call_sync();
+            }, 5000);            
+            
+        });
+
+        function call_sync (){
+            jsonRPC.call('sync', '',
+                        on_sync,
+                        function(error)  { console.log('There was an error', error); }
+            );
+        }
+
+        var state;
+        function on_sync (result){
+                console.log(result);
+                state = result;
+
+                //Render New Dongle state
+                render_dongle_tbl();
+                
+                //Render updated frequancy table - depends on active_dongle
+                if(active_dongle){
+                   render_freq_tbl();
+                   render_active_dongle();
+                }
+                return 0;
+        }
+
+        function render_active_dongle(){
+            if(active_dongle){
+                var tbl = $('#dongle_tbl tr');
+                for(var i=0; i < tbl.length; i++){
+                    if( tbl[i].cells[2].innerHTML == active_dongle){
+                        $(tbl[i]).addClass('active').siblings().removeClass('active');
+                    }
+                }
+            }   
+        }
+
+        function render_freq_tbl(){
+            var serial = active_dongle;
+            var idx;
+            for(idx = 0; idx < state.length; idx++){
+                if(state[idx].serial==serial) break;
+            }
+            
+            //populate freq table
+            $('#freq_tbl tr').not(':first').remove(); //dont remove header row
+            var html = '';
+            for(var i = 0; i < state[idx].freqs.length; i++){
+                var btn = '<button onclick="del_freq(this);" id="dongle_btn type="button" style="z-index:1000"  data-loading-text="Pending..." class="btn btn-danger btn-xs" autocomplete="off">Remove</button>'
+                html += '<tr><td>'+ state[idx].freqs[i].freq +'</td><td>'+ state[idx].freqs[i].mod +'</td><td>'+ state[idx].freqs[i].squalch +'</td><td>'+ state[idx].freqs[i].gain +'</td><td>' + btn + '</td></tr>';
+            }
+            $('#freq_tbl tr').first().after(html);
+            
+        }
+
+        function render_dongle_tbl(){
+           //populate dongle table
+            $('#dongle_tbl tr').not(':first').remove(); //dont remove header row
+            var html = '';
+            for(var i = 0; i < state.length; i++){
+
+                var btn = ''
+                if(state[i].state=='closed')
+                    btn = '<button onclick="open_dongle(this);" id="dongle_btn type="button" style="z-index:1000"  data-loading-text="Pending..." class="btn btn-danger btn-xs" autocomplete="off">Open</button>'
+                else
+                    btn = '<button onclick="close_dongle(this);" id="dongle_btn type="button" style="z-index:1000"  data-loading-text="Pending..." class="btn btn-success btn-xs" autocomplete="off">Close</button>'
+
+                html += '<tr><td>' + state[i].name + '</td><td>' + state[i].tuner + '</td><td>' + state[i].serial + '</td><td>' + btn + '</td></tr>';
+            }
+            $('#dongle_tbl tr').first().after(html);
+        }
+
+        
+        function close_dongle(event){
+            var serial = event.parentNode.previousSibling.innerHTML;
+            
+            $(event).addClass('btn-warning').addClass('disabled').removeClass('btn-success'); //Make orange
+            console.log('Opening', serial);
+            var params = {}
+            params.serial=serial;
+            jsonRPC.call('close', params,
+                        function(result) { console.log('on_close:',result); call_sync(); } ,
+                        function(error)  { console.log('There was an error', error); call_sync(); }
+            );
+        }
+
+        function open_dongle(event){
+            var serial = event.parentNode.previousSibling.innerHTML;
+            
+            $(event).addClass('btn-warning').addClass('disabled').removeClass('btn-danger'); //Make orange
+            console.log('Opening', serial);
+            var params = {}
+            params.serial=serial;
+            jsonRPC.call('open', params,
+                        function(result) { console.log('on_open:',result); call_sync(); } ,
+                        function(error)  { console.log('There was an error', error); call_sync(); }
+            );
+        }
+        
+        /* Set Active Dongle to list Frequancy table */
+        var active_dongle = null; //serial of active dongle
+        $('#dongle_tbl').on('click', 'tbody tr', function(event) {
+            active_dongle = this.cells[2].innerHTML;
+            render_active_dongle();
+            render_freq_tbl();
+        });
+
+        /* Add Frequancy to dongle */
+        $('#freq_add_btn').on('click', function () {
+            //TODO: add, no dongle selected error
+            var serial = active_dongle;
+            var $btn = $(this).button('loading');
+            var json = {};
+            var array = $('#freq_add').serializeArray();
+            for(x in array){
+                var e = 'json.' + array[x].name + '="' +  array[x].value +'"';
+                eval(e);
+            }
+            json.serial=serial;
+            console.log('add_freq:', json);
+            //send json
+            jsonRPC.call('add_freq', json,
+                function(result) { console.log('add_freq: ' + result); call_sync(); },
+                function(error)  { console.log('error: add_freq: ', error); }
+            );
+
+            $btn.button('reset');
+        });
+    </script>
+  </body>
+</html>
+
+
+    <!-- scripts
+    
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.1/js/bootstrap.min.js"></script>
+    <script src="https://raw.githubusercontent.com/Textalk/jquery.jsonrpcclient.js/0.7.0/jquery.jsonrpcclient.js"></script>
+    -->
