@@ -39,52 +39,42 @@
   </head>
   <body class="container-fluid"> 
     <div class="dongle_table"  style="width:100%; padding:3px;">
-        <table id="dongle_tbl" class="table table-hover" style="border: 2px solid black;">
+        <table id="dongle_tbl" class="table" style="border: 2px solid black;">
                 <tr><th>Name</th><th>Tuner</th><th>Serial</th></tr>
         </table>
     </div>
-    <div class="freq_table"  style="width:50%; padding:3px; float: right;">
-        <table id="freq_tbl" class="table table-hover text-center" style="border: 2px solid black;">
-                <tr><th>Index</th><th>Frequency</th><th>Modulator</th><th>Squalch</th><th>Gain</th></tr>  
+    <div class="freq_table"  style="width:33%; padding:3px; float: right;">
+        <table id="freq_tbl" class="table text-center" style="border: 2px solid black;">
+                <tr><th>Frequency</th><th>Modulator</th><th>Squalch</th><th>Gain</th></tr>
+                <tr>
+                <td>
+                    <div class="input-group input-group-sm">
+                        <input type="text" onkeyup="this.value=this.value.replace(/[^\d\.]/,'')" class="form-control" placeholder="Freq" aria-describedby="sizing-addon3">
+                        <span class="input-group-addon" id="sizing-addon3">MHz</span>
+                    </div>
+                </td>
+                <td>
+                    <div class="btn-group">
+                      <button type="button" id="mod_sel" class="btn btn-xs dropdown-toggle" data-toggle="dropdown">mod</button>
+                      <button type="button" class="btn btn-xs dropdown-toggle" data-toggle="dropdown" aria-expanded="false"> <span class="caret"></span> </button>
+                      <ul class="dropdown-menu" role="menu">
+                        <li><a href="#" onclick="$(&quot;#mod_sel&quot;)[0].innerHTML=$(this)[0].innerHTML" >FM</a></li>
+                        <li><a href="#" onclick="$(&quot;#mod_sel&quot;)[0].innerHTML=$(this)[0].innerHTML" >WBFM</a></li>
+                        <li><a href="#" onclick="$(&quot;#mod_sel&quot;)[0].innerHTML=$(this)[0].innerHTML" >AM</a></li>
+                        <li><a href="#" onclick="$(&quot;#mod_sel&quot;)[0].innerHTML=$(this)[0].innerHTML" >USB</a></li>
+                        <li><a href="#" onclick="$(&quot;#mod_sel&quot;)[0].innerHTML=$(this)[0].innerHTML" >LSB</a></li>
+                        <li><a href="#" onclick="$(&quot;#mod_sel&quot;)[0].innerHTML=$(this)[0].innerHTML" >RAW</a></li>
+                      </ul>
+                    </div>
+                </td>
+                <td>0</td>
+                <td>100</td>
+                <td> <button id="freq_add_btn" onclick="add_freq();" type="button"  data-loading-text="Pending..." class="btn btn-primary btn-xs" autocomplete="off">ADD </button> </td>
+                </tr>
         </table>
     </div>
-
-    <div class="freq_form">
-        <form id="freq_add" class="form-group form-group-sm" style="width:50%; float:right">
-
-            <label for="freq" class="col-sm-2 control-label" >Frequency</label>
-            <div> 
-                <input name="freq" id="freq" type="number" class="form-control" style="width:auto" placeholder="Enter Frequancy in Hz"> 
-            </div>
-
-            
-            <label for="mod" class="col-sm-2 control-label" >Modulation</label>
-            <div>
-                <select name="mod" id="mod" class="form-control" style="width:auto">
-                    <option>FM</option>
-                    <option>WBFM</option>
-                    <option>AM</option>
-                    <option>USB</option>
-                    <option>LSB</option>
-                    <option>RAW</option>
-                </select>
-            </div>
-            
-            <label for="squalch" class="col-sm-2 control-label" >Squalch</label>
-            <div>
-                <input name="squalch" type="number" class="form-control input-sm" style="width:auto" value="0">
-            </div>
-            
-            <label for="gain" class="col-sm-2 control-label" >Gain</label>
-            <div>
-                <input name="gain" type="number" class="form-control input-sm" style="width:auto" value="100">
-            </div>
-
-            
-        </form>
-        <button id="freq_add_btn" type="button"  data-loading-text="Pending..." class="btn btn-primary" autocomplete="off">ADD </button>
-        <button id="next_freq_btn"  onclick="next_freq();" type="button"  data-loading-text="Pending..." class="btn btn-primary" autocomplete="off">Freq Hop</button>
-    </div>
+    <button id="next_freq_btn"  onclick="next_freq();" type="button"  data-loading-text="Pending..." class="btn btn-primary" autocomplete="off">Freq Hop</button>
+    
 
     <script type="text/javascript">
         var jsonRPC;
@@ -145,13 +135,13 @@
             }
             
             //populate freq table
-            $('#freq_tbl tr').not(':first').remove(); //dont remove header row
+            $('#freq_tbl tr').not(':first').not(':last').remove(); //dont remove header row
             var html = '';
             var active = null;
             for(var i = 0; i < state[idx].freqs.length; i++){
                 if(state[idx].freqs[i].active==true) active=i;
                 var btn = '<button onclick="del_freq(' + i + ');" id="dongle_btn type="button" style="z-index:1000"  data-loading-text="Pending..." class="btn btn-danger btn-xs" autocomplete="off">Remove</button>'
-                html += '<tr><td>'+ i +'</td><td>'+ state[idx].freqs[i].freq +'</td><td>'+ state[idx].freqs[i].mod +'</td><td>'+ state[idx].freqs[i].squalch +'</td><td>'+ state[idx].freqs[i].gain +'</td><td>' + btn + '</td></tr>';
+                html += '<tr><<td>'+ state[idx].freqs[i].freq +'</td><td>'+ state[idx].freqs[i].mod +'</td><td>'+ state[idx].freqs[i].squalch +'</td><td>'+ state[idx].freqs[i].gain +'</td><td>' + btn + '</td></tr>';
             }
 
             //show currently tuned freq
@@ -238,26 +228,33 @@
         });
 
         /* Add Frequancy to dongle */
-        $('#freq_add_btn').on('click', function () {
+        function add_freq() {
             //TODO: add, no dongle selected error
-            var serial = active_dongle;
-            var $btn = $(this).button('loading');
             var json = {};
-            var array = $('#freq_add').serializeArray();
-            for(x in array){
-                var e = 'json.' + array[x].name + '="' +  array[x].value +'"';
-                eval(e);
-            }
-            json.serial=serial;
+            json.serial = active_dongle;
+            if( json.serial == null) return;
+            
+            var tbl = $('#freq_tbl tr');
+            tbl = tbl[tbl.length-1].children
+            
+            //Freq
+            json.freq=tbl[0].firstElementChild.firstElementChild.value+"e6";
+            //MOD
+            json.mod = tbl[1].firstElementChild.firstElementChild.innerHTML;
+            //Squlch
+            json.squalch = tbl[2].innerHTML;
+            //Gain
+            json.gain = tbl[3].innerHTML;
+
+            console.log(json);
+            
             console.log('add_freq:', json);
             //send json
             jsonRPC.call('add_freq', json,
                 function(result) { console.log('add_freq: ' + result); call_sync(); },
                 function(error)  { console.log('error: add_freq: ', error); }
             );
-
-            $btn.button('reset');
-        });
+        }
 
         
         
