@@ -65,6 +65,7 @@ static void *controller_thread_fn(void *arg);
 static void *demod_thread_fn(void *arg);
 static void *dongle_thread_fn(void *arg);
 void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx);
+static void* output_raw_to_ogg_thread_fn( void* arg );
 
 /// Same as strcmp, but also checks for NULL values.
 bool safe_strcmp( const char* a, const char* b )
@@ -95,6 +96,7 @@ typedef struct {
   pthread_cond_t sox_ready;
 	pthread_mutex_t sox_ready_m;
   pthread_rwlock_t sox_rw;
+  pthread_t sox_thread;
   
 } dongle_t;
 
@@ -125,7 +127,6 @@ dongle_t* dongle_add( char* serial )
   d->con_state = controller_init();
   d->con_state->freqs = CirLinkList_init();
   d->out_state = output_init();
-  d->out_state->http_clients = CirLinkList_init();
   d->dm_state = demod_init();
   d->dong_state = dongle_init(d->con_state, d->dm_state, d->out_state);
 
@@ -321,7 +322,10 @@ struct json_object * del_freq( struct json_object * req_obj ){
   }
 
   //TODO: thread saftey - controller
-  CirLinkList_del( d->con_state->freqs, atoi(idx) );
+  if(CirLinkList_del( d->con_state->freqs, atoi(idx) ) == d->con_state->active_freq){
+    //if currently tuned to this freq cause a hop
+    safe_cond_signal(&d->con_state->hop, &d->con_state->hop_m);
+  }
   //TODO: return ok;
   return NULL;
 
@@ -381,8 +385,7 @@ struct json_object * open_dongle ( struct json_object * req_obj )
   uint64_t serial = atol( dongle_serial );
   if( serial < 100 ) {
     while( serial < 100 ) {
-      serial = ( ( ( uint64_t )rand() << 32 ) | rand() ) % ( ( uint64_t )pow( 10,
-               8 ) );
+      serial = ( ( ( uint64_t )rand() << 32 ) | rand() ) % ( ( uint64_t )pow( 10,8 ) );
     }
     fprintf(stderr, "Changing Serial to: %08u", serial );
     //TODO: Write new serial number
@@ -393,11 +396,11 @@ struct json_object * open_dongle ( struct json_object * req_obj )
   //Start Dongle Threads
   pthread_create(&d->con_state->thread, NULL, controller_thread_fn, (void *)(d->dong_state));
 	sleep(.1);
-  //TODO: make output work with libmicrohttpd
-  //pthread_create( &d->out_state->thread, NULL, output_http_thread_fn, ( void* )( d->dong_state ) );
 	pthread_create(&d->dm_state->thread, NULL, demod_thread_fn, (void *)(d->dong_state));
 	pthread_create(&d->dong_state->thread, NULL, dongle_thread_fn, (void *)(d->dong_state));
 
+  //Turn on raw to ogg TODO: should be done somewhere else - on demand
+  pthread_create(&d->sox_thread, NULL, output_raw_to_ogg_thread_fn, (void *)(d));
   return 0;
 }
 
@@ -420,15 +423,16 @@ static void *controller_thread_fn(void *arg)
     fprintf(stderr,"Controller Thread Scanning\n");
     
     while (!do_exit) {
+
         /* Next Frequancy */
         s->active_freq = (scan_node*) CirLinkList_inc(s->freqs);
-        dongle->mute = BUFFER_DUMP;
-
-        //if no freq
+        //waiting for list to be populated
         while(s->active_freq == NULL){
           sleep(.1);
           s->active_freq = (scan_node*) CirLinkList_peek(s->freqs); //first frequancy
         }
+        
+        dongle->mute = BUFFER_DUMP;
       
         fprintf(stderr, "Tuning To: freq: %u, mod: %s, squalch: %d, gain: %d\n",
               s->active_freq->freq, s->active_freq->mod,
@@ -543,16 +547,17 @@ void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
   }
 	if (s->mute) {
 		for (i=0; i<s->mute; i++) {
-			buf[i] = 127;}
+			buf[i] = 127;
+    }
 		s->mute = 0;
 	}
   
 	if (!s->offset_tuning) {
 		rotate_90(buf, len);
-        }
+  }
 	for (i=0; i<(int)len; i++) {
 		s->buf16[i] = (int16_t)buf[i] - 127;
-    }
+  }
 
   pthread_rwlock_wrlock(&d->rw);
     
@@ -563,25 +568,35 @@ void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 	safe_cond_signal(&d->ready, &d->ready_m);
 }
 
-static void* output_http_thread_fn( void* arg )
+int sox_progress_cb(sox_bool all_done, void *client_data){
+  dongle_t * dongle = client_data;
+  dongle->sox_len++;
+  
+  return SOX_SUCCESS;
+}
+
+static void* output_raw_to_ogg_thread_fn( void* arg )
 {
   
-  
   uint16_t i;
-  dongle_state* dongle = arg;
-  output_state* s = dongle->output_target;
+  dongle_t* dongle = arg;
+  output_state* out_state = dongle->out_state;
   
-  pthread_rwlock_rdlock( &s->rw );
+  pthread_rwlock_rdlock( &out_state->rw );
 
-  #define MAX_SAMPLES (size_t)2048
   #define SOX_BUF_LENGTH (MAXIMUM_BUF_LENGTH*2)
   uint8_t sox_buffer[SOX_BUF_LENGTH];
-  sox_sample_t sox_samples[MAX_SAMPLES];
   sox_effects_chain_t * sox_chain;
   sox_effect_t * e;
   sox_signalinfo_t interm_signal; /* @ intermediate points in the chain. */
   char * sox_args[10];
   size_t number_read;
+
+  dongle->sox_buf = sox_buffer; //set buffer to here
+  dongle->sox_len = 0;
+
+  char * buffer;
+  size_t buffer_size;
   
   /* set sox input settings */
   const sox_encodinginfo_t inEncode = {
@@ -601,7 +616,7 @@ static void* output_http_thread_fn( void* arg )
     NULL
   };
 
-  sox_format_t* sox_in =  sox_open_mem_read(s->result, 2*MAXIMUM_BUF_LENGTH, &inSignal, &inEncode, "raw");
+  sox_format_t* sox_in =  sox_open_mem_read(out_state->result, MAXIMUM_BUF_LENGTH, &inSignal, &inEncode, "raw");
   
   /* set sox output settings */
   const sox_encodinginfo_t outEncode = {
@@ -623,7 +638,7 @@ static void* output_http_thread_fn( void* arg )
   
   sox_format_t* sox_out = sox_open_mem_write(sox_buffer, SOX_BUF_LENGTH, &outSignal, &outEncode, "ogg", NULL);
 
-  fprintf(stderr,"Sox Buffers Opened %p, %p\n", s->result, sox_buffer);
+  fprintf(stderr,"Sox Buffers Opened %p, %p\n", out_state->result, sox_buffer);
 
   /* setup sox chain */
   sox_chain = sox_create_effects_chain(&sox_in->encoding, &sox_out->encoding);
@@ -632,33 +647,38 @@ static void* output_http_thread_fn( void* arg )
 
   //Input Effect in chain
   e = sox_create_effect(sox_find_effect("input"));
-  sox_args[0] = (char *)sox_in, assert(sox_effect_options(e, 1, sox_args) == SOX_SUCCESS);
+  sox_args[0] = (char *)sox_in; assert(sox_effect_options(e, 1, sox_args) == SOX_SUCCESS);
   assert(sox_add_effect(sox_chain, e, &interm_signal, &sox_in->signal) == SOX_SUCCESS);
   free(e);
 
   //TODO  add filters in here
   
   e = sox_create_effect(sox_find_effect("output"));
-  sox_args[0] = (char *)sox_out, assert(sox_effect_options(e, 1, sox_args) == SOX_SUCCESS);
+  sox_args[0] = (char *)sox_out; assert(sox_effect_options(e, 1, sox_args) == SOX_SUCCESS);
   assert(sox_add_effect(sox_chain, e, &interm_signal, &sox_out->signal) == SOX_SUCCESS);
   free(e);
 
   fprintf(stderr,"Sox Chain Opened\n");
-  pthread_rwlock_unlock( &s->rw );
+  pthread_rwlock_unlock( &out_state->rw );
 
 
   while ( !do_exit ) {
 
-    /* Wait For Data */
-    safe_cond_wait(&s->ready, &s->ready_m);
+    /* Wait For Data Raw*/
+    safe_cond_wait(&out_state->ready, &out_state->ready_m);
 
     /* Lock Output State for read */
-    pthread_rwlock_rdlock( &s->rw );
+    pthread_rwlock_rdlock( &out_state->rw );
     /* do SOX transcode - result data will be in sox_buffer*/
-    sox_flow_effects(sox_chain, NULL, NULL);
-    pthread_rwlock_unlock( &s->rw );
-
+    dongle->sox_len=0;
+    //TODO: should lock sox mem
+    sox_flow_effects(sox_chain, &sox_progress_cb, dongle);
+    pthread_rwlock_unlock( &out_state->rw );
+    fprintf(stderr,"SOX: %u\n",dongle->sox_len);
+    dongle->sox_len*=8192;
+    
     //use cond to notify http callbacks that want ogg
+    safe_cond_broadcast(&dongle->sox_ready , &dongle->sox_ready_m);
 
   }
   return 0;
@@ -684,7 +704,6 @@ ssize_t http_ogg_output_stream_cb (void *cls, uint64_t pos, char *buf, size_t ma
 {
   //cls should be ref to dongle_t
   dongle_t* dongle = cls;
-  
   //TODO: if dongle off return -1 - could use timeout
   safe_cond_wait( &dongle->sox_ready, &dongle->sox_ready_m );
   pthread_rwlock_rdlock( &dongle->sox_rw );
@@ -693,6 +712,7 @@ ssize_t http_ogg_output_stream_cb (void *cls, uint64_t pos, char *buf, size_t ma
 
   //return bytes copied 
   return dongle->sox_len;
+  //return strlen(test);
 }
 
 const char * NOT_FOUND = "<h1> Not Found </h1>";
