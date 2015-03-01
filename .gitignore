@@ -34,7 +34,8 @@ doc/
 
 rtl_httpd
 rtl_fm
-
+ftdi_dss
+rtlsdr_test
 
 CMakeCache.txt
 */CMakeFiles

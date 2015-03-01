@@ -39,6 +39,9 @@ extern "C" {
 #define AUTO_GAIN			-100
 #define BUFFER_DUMP			4096
 
+#define MIN(a,b) (((a)<(b))?(a):(b))
+#define MAX(a,b) (((a)>(b))?(a):(b))
+
 /* more cond dumbness */
 #define safe_cond_signal(n, m) pthread_mutex_lock(m); pthread_cond_signal(n); pthread_mutex_unlock(m)
 #define safe_cond_broadcast(n, m) pthread_mutex_lock(m); pthread_cond_broadcast(n); pthread_mutex_unlock(m)
@@ -60,6 +63,7 @@ typedef struct
 	int	        squelch_level;
 	int		gain;
 }scan_node;
+
 
 typedef struct controller_state
 {
@@ -149,6 +153,31 @@ typedef struct dongle_state
         
 } dongle_state;
 
+typedef struct {
+  char serial[16];
+  enum rtlsdr_tuner tuner;
+  
+  //Threads
+  output_state* out_state; //Output thread state
+  demod_state* dm_state; //Demod thread state
+  controller_state* con_state; //Controler thread state
+  dongle_state* dong_state; //Dongle Thread state
+  
+} dongle_t;
+
+typedef struct
+{
+  /* DSP config */
+  uint8_t * out_buf;
+  int64_t out_len;
+
+  dongle_t * dongle;
+
+  pthread_cond_t ready;
+  pthread_mutex_t ready_m;
+  pthread_rwlock_t rw;
+  pthread_t thread;
+}dsp_t;
 
 void optimal_settings(int freq, int rate, dongle_state *d);
 void sanity_checks(controller_state* controller);

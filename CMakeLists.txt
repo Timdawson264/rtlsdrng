@@ -18,7 +18,14 @@ add_library(fm_httpd fm_httpd_common.c)
 ########################################################################
 add_executable(rtl_httpd rtl_httpd.c)
 add_executable(rtl_fm rtl_fm.c)
+add_executable(ftdi_dss dss.c)
+add_executable(rtlsdr_test rtlsdr_test.c)
 
+target_link_libraries(ftdi_dss
+    ftdi1
+    m
+)
+  
 
 target_link_libraries(rtl_fm
     fm_httpd
@@ -34,8 +41,8 @@ target_link_libraries(rtl_httpd
     pthread
     rtlsdr
     m
-    onion
     sox
+    onion
     microhttpd
     json-c
 )
