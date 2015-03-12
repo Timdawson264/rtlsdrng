@@ -52,3 +52,14 @@ web_include/js.all
 web_include/web.all
 web_include/web_include.h
 
+kernel.log
+module/.rtlsdr.ko.cmd
+module/.rtlsdr.mod.o.cmd
+module/.rtlsdr.o.cmd
+module/.tmp_versions/
+module/Module.symvers
+module/kernel.log
+module/modules.order
+module/rtlsdr.ko
+module/rtlsdr.mod.c
+test.log
