@@ -346,19 +346,21 @@ int rtlsdr_set_sample_rate(int fd, uint32_t samp_rate)
 	return r;
 }
 
-#define BUFFERSIZE 64*1024
+#define BUFFERSIZE 1024*64
 int main( int argc, char** argv )
 {
   ssize_t s=1;
   size_t i,loss;
-  uint8_t buffer[BUFFERSIZE];
+  uint8_t * buffer;//[BUFFERSIZE];
   uint8_t byte,flag;
   
-  int rtlsdr0 = open("/dev/rtlsdr0", O_RDWR);
+  int rtlsdr0 = open("/dev/rtlsdr0", O_RDWR|O_ASYNC);
   if(rtlsdr0 == -1){
     fprintf(stderr ,"Error opening device\n");
     return 1;
-  }
+  } 
+
+  buffer = malloc(BUFFERSIZE);
     
   /* perform a dummy write, if it fails, reset the device */
   if ( rtlsdr_write_reg( rtlsdr0, USBB, USB_SYSCTL, 0x09, 1 ) < 0 ) {
@@ -378,7 +380,7 @@ int main( int argc, char** argv )
   rtlsdr_demod_write_reg(rtlsdr0, 1, 0x15, 0x01, 1);
   rtlsdr_set_i2c_repeater(rtlsdr0, 0);
 
-  rtlsdr_set_sample_rate(rtlsdr0, 3000000);
+  rtlsdr_set_sample_rate(rtlsdr0, 2000000);
   rtlsdr_set_testmode(rtlsdr0, 1);
   rtlsdr_reset_buffer(rtlsdr0);
 
@@ -388,16 +390,16 @@ int main( int argc, char** argv )
   
   while(s>=0){
     s=read(rtlsdr0, buffer, BUFFERSIZE);
-    if(i<1)continue;
+    if(s<0)continue;
     
     for(i=0;i<s;i++){
       fprintf(stdout,"%u ",buffer[i]);
       if(buffer[i]!=0)flag=1;
       
       if(buffer[i]!=byte){
-        loss++;
         fprintf(stderr,"DataLoss: %u,%u:%hhu\n",loss, i, buffer[i]);
-        byte=buffer[i]; //reset progress  
+        loss++;
+        byte=buffer[i]; //reset progress
       }
       byte++;
     }

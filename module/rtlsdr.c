@@ -23,6 +23,7 @@
 #include <linux/mutex.h>
 #include <linux/circ_buf.h>
 #include <linux/mm.h>
+#include <linux/time.h>
 
 #include "rtlsdr.h"
 
@@ -50,7 +51,7 @@ MODULE_DEVICE_TABLE( usb, rtlsdr_table );
 #define WRITES_IN_FLIGHT	8
 /* arbitrarily chosen */
 
-#define CONCURRENT_READS        16
+#define CONCURRENT_READS        32
 
 /* Structure to hold all of our device specific stuff */
 struct usb_rtlsdr {
@@ -84,6 +85,7 @@ struct usb_rtlsdr {
   struct mutex          dev_mutex;              /* device global mutex */
   wait_queue_head_t	bulk_in_wait;		/* to wait for an ongoing read */
 };
+
 #define to_rtlsdr_dev(d) container_of(d, struct usb_rtlsdr, kref)
 
 static struct usb_driver rtlsdr_driver;
@@ -197,12 +199,18 @@ static int rtlsdr_flush( struct file* file, fl_owner_t id )
 static void rtlsdr_continuous_read_callback( struct urb* urb ){
 
         struct usb_rtlsdr* dev;
+        struct timeval tv; //time of arrival
         int rv;
         size_t i;
         unsigned long head,tail;
-        dev = urb->context;
-        spin_lock(&dev->producer_lock);
 
+        dev = urb->context;
+        
+        do_gettimeofday(&tv);/* First thing is to set time of arrival - currently in interrupt state */
+        //dev_info( &dev->interface->dev, "rtlsdr-%d %s, TOA: %lu.%lu", dev->interface->minor, __FUNCTION__, tv.tv_sec, tv.tv_usec);
+
+        spin_lock(&dev->producer_lock);
+        
         head = dev->bulk_in_head;
 	tail = ACCESS_ONCE(dev->bulk_in_tail);
 
@@ -212,7 +220,7 @@ static void rtlsdr_continuous_read_callback( struct urb* urb ){
         
         if (CIRC_SPACE(head, tail, dev->bulk_in_size) >= urb->actual_length) {
 
-                dev_info( &dev->interface->dev, "rtlsdr-%d %s adding to circ free: %lu urb: %u", dev->interface->minor, __FUNCTION__, CIRC_SPACE(head, tail, dev->bulk_in_size) , urb->actual_length);
+                //dev_info( &dev->interface->dev, "rtlsdr-%d %s adding to circ free: %lu urb: %u", dev->interface->minor, __FUNCTION__, CIRC_SPACE(head, tail, dev->bulk_in_size) , urb->actual_length);
 
                 /* insert a usb packet worth of data into the buffer */
                 for(i=0;i<urb->actual_length;i++){
@@ -226,7 +234,7 @@ static void rtlsdr_continuous_read_callback( struct urb* urb ){
 		wake_up_interruptible( &dev->bulk_in_wait ); //wake up threads sleeping for data
 	}else{
          //we overrun our circ buffer
-         dev_info( &dev->interface->dev, "rtlsdr-%d %s Overrun", dev->interface->minor, __FUNCTION__);
+         dev_info( &dev->interface->dev, "rtlsdr-%d %s overrun", dev->interface->minor, __FUNCTION__);
          //dev_info( &dev->interface->dev, "rtlsdr-%d %s circ free: %lu urb: %u", dev->interface->minor, __FUNCTION__, CIRC_SPACE(head, tail, dev->bulk_in_size) , urb->actual_length);
         }
         spin_unlock(&dev->producer_lock);
@@ -290,7 +298,7 @@ static ssize_t rtlsdr_read_blocking ( struct file* file, char* buffer, size_t co
   int length;
 
   uint8_t * buf;  
-  count = min(count,512); //Limit packet size
+  count = min(count,(size_t)512); //Limit packet size
   
   dev = file->private_data;
   if ( dev == NULL ) {
@@ -322,20 +330,19 @@ static ssize_t rtlsdr_continuouse_read( struct file* file, char* buffer, size_t 
                             loff_t* ppos )
 {
         struct usb_rtlsdr* dev;
-        ssize_t len; //data read
+        ssize_t len,nocopy; //data read
         unsigned long head, tail;
-        uint8_t flag;
         size_t i;
 	
         dev = file->private_data;
-        spin_lock(&dev->consumer_lock);
+        /* device disconected */
+        if(!dev || !dev->interface || !&dev->interface->dev) return -EIO;
         
         //Start up the callback
         if(dev->ongoing_read == 0){
                 rtlsdr_do_read_io( dev ); //full urb and submit for the first time
-                len=0;
-                goto exit;
         }
+        
 retry:
 	/* Read index before reading contents at that index. */
 	head = smp_load_acquire(&dev->bulk_in_head);
@@ -345,45 +352,34 @@ retry:
 	if ( (len=CIRC_CNT(head, tail, dev->bulk_in_size)) > 0) {
 
                 /* write continuoise block */                
-                len = min((size_t)len,count); //make sure we dont copy to much data
+                len = min((size_t)len,count); //make sure we dont copy more data then we have
+
+                if( !access_ok (VERIFY_WRITE, buffer, len)){
+                        dev_err( &dev->interface->dev, "rtlsdr-%d %s unsafe pointer", dev->interface->minor, __FUNCTION__);
+                }
                 
-                len -= copy_to_user(buffer, dev->bulk_in_buffer+tail, len); //returns number bytes copied
-                dev_info( &dev->interface->dev, "rtlsdr-%d %s reading, copied: %lu", dev->interface->minor, __FUNCTION__, (size_t)len);
-                /*
-                flag=0;
-                for(flag=0,i=0; i<len; i++)
-                  if( dev->bulk_in_buffer[tail+i]!=0 ) flag=1;
-                dev_info( &dev->interface->dev, "rtlsdr-%d %s, FLAG:%u", dev->interface->minor, __FUNCTION__, flag);
-                */
+                nocopy = copy_to_user(buffer, dev->bulk_in_buffer+tail, len); //returns number bytes copied
+                //dev_info( &dev->interface->dev, "rtlsdr-%d %s reading, copied: %lu of %lu", dev->interface->minor, __FUNCTION__, len-nocopy, (size_t)len);
+                len-=nocopy;//data not copied
                 
-                //if(len==0)dev_info( &dev->interface->dev, "rtlsdr-%d %s Zero Copy len", dev->interface->minor, __FUNCTION__);
-                
-		/* Finish reading descriptor before incrementing tail. */
+                /* Finish reading descriptor before incrementing tail. */
 		smp_store_release(&dev->bulk_in_tail, (tail + len) & (dev->bulk_in_size - 1) );
-                
 	} else {
-                dev_info( &dev->interface->dev, "rtlsdr-%d %s Underrun", dev->interface->minor, __FUNCTION__);
+                dev_info( &dev->interface->dev, "rtlsdr-%d %s underrun", dev->interface->minor, __FUNCTION__);
+
                 /* nonblocking IO shall not wait */
                 if ( file->f_flags & O_NONBLOCK ) {
                   len = -EAGAIN;
                   goto exit;
                 }else{
-                  //len = 0;
-                  //goto exit;
-                  
-                  spin_unlock(&dev->consumer_lock);
-                  if( wait_event_interruptible_timeout ( dev->bulk_in_wait, 0, msecs_to_jiffies(1000) ) < 0 ){
-                        spin_lock(&dev->consumer_lock);
+                  if( wait_event_interruptible_timeout ( dev->bulk_in_wait , (head != smp_load_acquire(&dev->bulk_in_head) ), msecs_to_jiffies(1000) ) == 0 ){
                         goto retry;
                   }     
                   return 0;
-                  
                 }
         }
         
 exit:
-	spin_unlock(&dev->consumer_lock);
-
         return len;
 }
 
@@ -444,6 +440,9 @@ static long rtlsdr_ioctl (struct file * file, unsigned int cmd, unsigned long ar
 
     return -ENODEV;
   }
+  
+  if(!dev || !dev->interface || !&dev->interface->dev) return -EIO;
+  
   interface = dev->interface;
   err=-1;
 
@@ -533,7 +532,7 @@ static int rtlsdr_probe( struct usb_interface* interface,
 
         dev->bulk_in_endpointAddr = endpoint->bEndpointAddress;
 
-        buffer_size = 1024*1024*4;//ring buffer 4 Mb
+        buffer_size = 1024*1024*1;//ring buffer 4 Mb
 
         dev->bulk_in_buffer = (unsigned char*)__get_free_pages(GFP_KERNEL, get_order(buffer_size));
         dev->bulk_in_size = buffer_size;
@@ -546,7 +545,7 @@ static int rtlsdr_probe( struct usb_interface* interface,
         }
 
 
-        dev->bulk_in_size_urb = 1024*64;
+        dev->bulk_in_size_urb = 512;
         dev->bulk_in_number_urb = CONCURRENT_READS;
 
         for(i=0; i<dev->bulk_in_number_urb; i++){
@@ -634,6 +633,8 @@ static void rtlsdr_disconnect( struct usb_interface* interface )
 //stop all transfers
 static void rtlsdr_draw_down( struct usb_rtlsdr* dev )
 {
+  if(!dev || !dev->interface || !&dev->interface->dev) return;
+  
   dev_info( &dev->interface->dev,  "%s - start", __func__);
   usb_kill_anchored_urbs(&dev->submitted);
   if( !usb_wait_anchor_empty_timeout(&dev->submitted, 1000) ){
