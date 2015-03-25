@@ -224,7 +224,7 @@ static void* controller_thread_fn( void* arg )
 
   for( i = 0; i < s->freqs->size; i++ ) {
     scan_node* n = ( scan_node* ) CirLinkList_get( s->freqs, i );
-    if( strcmp( "wbfm", n->mod ) == 0 || strcmp( "WBFM", n->mod ) == 0 ) {
+    if( strcasecmp( "WBFM", n->mod ) == 0 ) {
       n->freq += 16000;
     }
   }
@@ -319,9 +319,11 @@ int main( int argc, char** argv )
   output_state* output = output_init();
   dongle = dongle_init( controller, demod, output ); //global var
 
+  scan_node* s_node = NULL;
 
   while ( ( opt = getopt( argc, argv,
                           "d:f:g:s:b:l:o:t:r:p:E:F:A:M:h" ) ) != -1 ) {
+      
     switch ( opt ) {
       case 'd':
         dongle->dev_index = verbose_device_search( optarg );
@@ -331,21 +333,27 @@ int main( int argc, char** argv )
         if ( strchr( optarg, ':' ) ) {
           frequency_range( controller, optarg );
         } else {
-          scan_node* node = malloc( sizeof( scan_node ) );
-          if( controller->freqs->size > 0 ) { //default to prev nodes settings
-            memcpy( node, CirLinkList_peek( controller->freqs ), sizeof( scan_node ) ) ;
+          //no current scan nodes
+          if(!s_node){
+              s_node=malloc( sizeof( scan_node ) );
+              CirLinkList_push( controller->freqs, s_node ); //add to scan list
+          }else{//submit this scan node an create new one with the defaults of the old scan node
+              CirLinkList_push( controller->freqs, s_node ); //add to scan list
+              s_node=malloc( sizeof( scan_node ) );
+              //copy accross old settings
+              memcpy( s_node, CirLinkList_peek( controller->freqs ), sizeof( scan_node ) ) ;
           }
-          node->freq = ( uint32_t )atofs( optarg );
-          CirLinkList_push( controller->freqs, node ); //add to scanner list
+          s_node->freq = ( uint32_t )atofs( optarg );
+          
         }
         break;
       case 'g':
-        ( ( scan_node* )CirLinkList_peek( controller->freqs ) )->gain = ( int )( atof(
-              optarg ) * 10 );
+        if(!s_node) return 5;
+        s_node->gain = ( int )( atof( optarg ) * 10 );
         break;
       case 'l':
-        ( ( scan_node* )CirLinkList_peek( controller->freqs ) )->squelch_level =
-          ( int )atof( optarg );
+        if(!s_node) return 5;
+        s_node->squelch_level =( int )atof( optarg );
         break;
       case 's':
         demod->rate_in = ( uint32_t )atofs( optarg );
@@ -410,7 +418,8 @@ int main( int argc, char** argv )
         }
         break;
       case 'M':
-        ( ( scan_node* )CirLinkList_peek( controller->freqs ) )->mod = optarg;
+        if(!s_node) return 5;
+        s_node->mod = optarg;
         setdemod( demod, optarg );
         break;
       case 'h':
@@ -419,7 +428,6 @@ int main( int argc, char** argv )
         break;
     }
   }
-
   /* quadruple sample_rate to limit to Δθ to ±π/2 */
   demod->rate_in *= demod->post_downsample;
 

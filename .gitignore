@@ -37,6 +37,8 @@ rtl_fm
 ftdi_dss
 rtlsdr_test
 
+gqrx*.raw
+
 CMakeCache.txt
 */CMakeFiles
 CMakeFiles
