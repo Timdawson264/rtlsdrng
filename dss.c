@@ -4,7 +4,9 @@
 #include <math.h>
 #include <string.h>
 #include <unistd.h>
-#include <libftdi1/ftdi.h>
+#include <stdint.h>
+//#include <libftdi1/ftdi.h>
+#include <ftdi.h>
 
 #define PIN_TX  0x01 
 #define PIX_RX  0x02  

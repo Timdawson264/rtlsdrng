@@ -14,10 +14,10 @@ block_size=256
 def main():
 
   #get data
-  sdr = RtlSdr(1)
+  sdr = RtlSdr()
   sdr.sample_rate = 2.4e6  # Hz
-  sdr.center_freq = 485.9e6     # Hz
-  #sdr.center_freq = 26e6     # Hz
+#  sdr.center_freq = 485.9e6     # Hz
+  sdr.center_freq = 27.144e6     # Hz
   #sdr.freq_correction = 60   # PPM
   sdr.gain = 100
 

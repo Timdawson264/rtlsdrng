@@ -19,6 +19,7 @@ struct rtlsdr_ctrltransfer {
 
 #define RTLSDR_CONTROL    _IOWR('R', 0, struct rtlsdr_ctrltransfer)
 #define RTLSDR_RESET    _IO('R', 1)
+#define RTLSDR_SETTIMESTAMP    _IOW('R', 2, uint8_t)
 
 #ifdef __cplusplus
 }

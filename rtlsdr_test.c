@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <string.h>
 #include <stdio.h>
 
 //UNIX File
@@ -12,9 +13,20 @@
 #include <asm/byteorder.h>
 #include "module/rtlsdr.h"
 
+//Timming
+#include <sys/time.h>
+#include <linux/types.h>
+
 #define R82XX_IF_FREQ 3570000
 #define FIR_LEN 16
 #define TWO_POW(n)		((double)(1ULL<<(n)))
+
+
+//union ktime {
+//  int64_t  tv64;
+//};
+ 
+typedef union ktime ktime_t;
 
 /*
  * FIR coefficients.
@@ -346,21 +358,26 @@ int rtlsdr_set_sample_rate(int fd, uint32_t samp_rate)
 	return r;
 }
 
-#define BUFFERSIZE 1024*64
+#define BUFFERSIZE (512+sizeof(struct timespec))
+#define SAMPLES 1000
+#define SET_SAMP_RATE ((uint64_t)1e6)
+
 int main( int argc, char** argv )
 {
   ssize_t s=1;
+  size_t next_ts;
   size_t i,loss;
-  uint8_t * buffer;//[BUFFERSIZE];
-  uint8_t byte,flag;
+  time_t * ts;
+  uint8_t * buffer[BUFFERSIZE];
+  uint64_t ts_samples[SAMPLES];
   
-  int rtlsdr0 = open("/dev/rtlsdr0", O_RDWR|O_ASYNC);
+  int rtlsdr0 = open("/dev/rtlsdr0", O_RDWR);
   if(rtlsdr0 == -1){
     fprintf(stderr ,"Error opening device\n");
     return 1;
   } 
 
-  buffer = malloc(BUFFERSIZE);
+
     
   /* perform a dummy write, if it fails, reset the device */
   if ( rtlsdr_write_reg( rtlsdr0, USBB, USB_SYSCTL, 0x09, 1 ) < 0 ) {
@@ -379,30 +396,49 @@ int main( int argc, char** argv )
   /* enable spectrum inversion */
   rtlsdr_demod_write_reg(rtlsdr0, 1, 0x15, 0x01, 1);
   rtlsdr_set_i2c_repeater(rtlsdr0, 0);
-
-  rtlsdr_set_sample_rate(rtlsdr0, 2000000);
+  
+  rtlsdr_set_sample_rate(rtlsdr0, SET_SAMP_RATE);
   rtlsdr_set_testmode(rtlsdr0, 1);
   rtlsdr_reset_buffer(rtlsdr0);
 
-  loss=0;
-  byte=0;
   s=0;
-  
-  while(s>=0){
+  //struct timespec * tmptv;
+  uint64_t * tmptv;
+  size_t num = 0;
+  while(s>=0 && num<SAMPLES){
     s=read(rtlsdr0, buffer, BUFFERSIZE);
     if(s<0)continue;
+    if(s<sizeof(uint64_t)) continue;
+
+    tmptv = (uint64_t*) buffer;//point to timestamp in buffer
+    //print bytes of timesamp
+    printf("%#zx\n", tmptv[0]);
     
-    for(i=0;i<s;i++){
-      fprintf(stdout,"%u ",buffer[i]);
-      if(buffer[i]!=0)flag=1;
-      
-      if(buffer[i]!=byte){
-        fprintf(stderr,"DataLoss: %u,%u:%hhu\n",loss, i, buffer[i]);
-        loss++;
-        byte=buffer[i]; //reset progress
-      }
-      byte++;
-    }
-    //if(!flag) fprintf(stderr,"FLAG: %u\n", flag);
+    //ts_samples[num] = *tmptv; //save the time
+    memcpy( (void *)&ts_samples[num], (void *)tmptv, sizeof(uint64_t) );
+    num++;
+    
   }
+
+  /*for(s=0; s<SAMPLES; s++){
+    fprintf(stdout,"TS %u: %llu\n", s, ts_samples[s]);
+  }*/
+
+  //stats of samples
+  //Average samples distance
+  uint64_t ts_avg=0;
+
+  ts_avg = ts_samples[1]-ts_samples[0];
+  for(s=2; s<SAMPLES; s++){
+    ts_avg =  ( (ts_samples[s]-ts_samples[s-1]) + ts_avg) /2;
+  }
+
+  double calc_samp = 0, calc_error=0;
+  calc_samp = (1e9)/(ts_avg/256);
+  calc_error = 1e6-calc_samp;
+  
+  fprintf(stdout,"AVG Diff ns: %llu\n",ts_avg);
+  fprintf(stdout,"Calculated Sample Rate: %f\n",calc_samp);
+  fprintf(stdout,"Sample Rate Error: %f\n",calc_error);
 }
+

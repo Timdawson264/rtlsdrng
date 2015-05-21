@@ -30,14 +30,14 @@
 
 //http
 #include <json-c/json.h>
-#include <onion/onion.h>
-#include <onion/dict.h>
-#include <onion/block.h>
-#include <onion/request.h>
-#include <onion/response.h>
-#include <onion/url.h>
-#include <onion/low.h>
-#include <onion/log.h>
+//#include <onion/onion.h>
+//#include <onion/dict.h>
+//#include <onion/block.h>
+//#include <onion/request.h>
+//#include <onion/response.h>
+//#include <onion/url.h>
+//#include <onion/low.h>
+//#include <onion/log.h>
 #include <microhttpd.h>
 
 #include "web_include/web_include.h"
@@ -179,7 +179,6 @@ struct json_object * rpc_sync(struct json_object * req_obj){
 
     
     //Add Freq list
-    onion_dict* freqs_dict = onion_dict_new();
     struct json_object* freqs_obj = json_object_new_array();
     uint16_t f;
     //TODO: Thread Saftey - controller
@@ -581,11 +580,10 @@ static void* output_raw_to_ogg_thread_fn( void* arg )
 }
 */
 
-//static ssize_t dir_reader (void *cls, uint64_t pos, char *buf, size_t max)
-ssize_t http_raw_output_stream_cb (void *cls, uint64_t pos, char *buf, size_t max)
+ssize_t http_raw_output_stream_cb (void *ctx, uint64_t pos, char *buf, size_t max)
 {
-  //cls should be ref to dongle_t
-  dongle_t* dongle = cls;
+  //ctx should be ref to dongle_t
+  dongle_t* dongle = ctx;
   output_state* out = dongle->out_state;
   
   //TODO: if dongle off return -1
