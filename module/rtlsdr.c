@@ -208,8 +208,8 @@ static int rtlsdr_flush( struct file* file, fl_owner_t id )
 static void rtlsdr_continuous_read_callback( struct urb* urb ){
 
   struct usb_rtlsdr* dev;
-  //struct timespec tv; //time of arrival
-  ktime_t tv; 
+  struct timespec ts; //time of arrival (TOA)
+  //ktime_t tv; 
   int rv;
   size_t i;
   unsigned long head,tail;
@@ -218,7 +218,8 @@ static void rtlsdr_continuous_read_callback( struct urb* urb ){
 
   //tv = current_kernel_time();
   //getnstimeofday(&tv);
-  tv = ktime_get();
+  ktime_get_ts(&ts); //CLOCK_MONOTONIC - Raw time scaled by ntp (adjtime) to correct frequancy
+  //tv = ktime_get();
   //dev_info( &dev->interface->dev, "rtlsdr-%d %s, TOA: %lu.%lu", dev->interface->minor, __FUNCTION__, tv.tv_sec, tv.tv_usec);
 
   spin_lock(&dev->producer_lock);
@@ -230,14 +231,15 @@ static void rtlsdr_continuous_read_callback( struct urb* urb ){
           dev_info( &dev->interface->dev, "rtlsdr-%d %s, urb req %u < rxed: %u", dev->interface->minor, __FUNCTION__, urb->transfer_buffer_length , urb->actual_length);
   }
   
-  if (CIRC_SPACE(head, tail, dev->bulk_in_size) >= urb->actual_length+sizeof(ktime_t)){
+  if (CIRC_SPACE(head, tail, dev->bulk_in_size) >= urb->actual_length+sizeof(struct timespec)){
 
     //dev_info( &dev->interface->dev, "rtlsdr-%d %s adding to circ free: %lu urb: %u", dev->interface->minor, __FUNCTION__, CIRC_SPACE(head, tail, dev->bulk_in_size) , urb->actual_length);
 
     /* Copy in timestamp */
-    for(i=0; i<sizeof(ktime_t) ; i++){
-      dev->bulk_in_buffer[ (head+i) & (dev->bulk_in_size-1) ] = ((char*)&tv)[i];
+    for(i=0; i<sizeof(struct timespec) ; i++){
+      dev->bulk_in_buffer[ (head+i) & (dev->bulk_in_size-1) ] = ((char*)&ts)[i];
     }
+
     head = ( head + sizeof(ktime_t) ) & (dev->bulk_in_size-1); //Add timestamp to ringbuf
     
     /* Copy in USB payload */

@@ -22,12 +22,6 @@
 #define TWO_POW(n)		((double)(1ULL<<(n)))
 
 
-//union ktime {
-//  int64_t  tv64;
-//};
- 
-typedef union ktime ktime_t;
-
 /*
  * FIR coefficients.
  *
@@ -359,8 +353,8 @@ int rtlsdr_set_sample_rate(int fd, uint32_t samp_rate)
 }
 
 #define BUFFERSIZE (512+sizeof(struct timespec))
-#define SAMPLES 1000
-#define SET_SAMP_RATE ((uint64_t)1e6)
+#define SAMPLES 100
+#define SET_SAMP_RATE ((uint64_t)1.02857e6)
 
 int main( int argc, char** argv )
 {
@@ -369,7 +363,7 @@ int main( int argc, char** argv )
   size_t i,loss;
   time_t * ts;
   uint8_t * buffer[BUFFERSIZE];
-  uint64_t ts_samples[SAMPLES];
+  struct timespec ts_samples[SAMPLES];
   
   int rtlsdr0 = open("/dev/rtlsdr0", O_RDWR);
   if(rtlsdr0 == -1){
@@ -402,43 +396,46 @@ int main( int argc, char** argv )
   rtlsdr_reset_buffer(rtlsdr0);
 
   s=0;
-  //struct timespec * tmptv;
-  uint64_t * tmptv;
+  struct timespec * tmpts;
   size_t num = 0;
+
   while(s>=0 && num<SAMPLES){
     s=read(rtlsdr0, buffer, BUFFERSIZE);
     if(s<0)continue;
-    if(s<sizeof(uint64_t)) continue;
+    if(s<sizeof(struct timespec)) continue;
 
-    tmptv = (uint64_t*) buffer;//point to timestamp in buffer
+    tmpts = (struct timespec*) buffer;//point to timestamp in buffer
     //print bytes of timesamp
-    printf("%#zx\n", tmptv[0]);
+    //printf("%#zx\n", tmpts[0]);
     
-    //ts_samples[num] = *tmptv; //save the time
-    memcpy( (void *)&ts_samples[num], (void *)tmptv, sizeof(uint64_t) );
+    memcpy( (void *)&ts_samples[num], (void *)tmpts, sizeof(struct timespec) );
     num++;
     
   }
 
-  /*for(s=0; s<SAMPLES; s++){
-    fprintf(stdout,"TS %u: %llu\n", s, ts_samples[s]);
-  }*/
+  for(s=0; s<SAMPLES; s++){
+    fprintf(stdout,"TS%u: %llu.%llu\n", s, ts_samples[s].tv_sec, ts_samples[s].tv_nsec);
+  }
 
   //stats of samples
   //Average samples distance
-  uint64_t ts_avg=0;
+  struct timespec ts_avg;
 
-  ts_avg = ts_samples[1]-ts_samples[0];
+  ts_avg.tv_sec  = ts_samples[1].tv_sec - ts_samples[0].tv_sec;
+  ts_avg.tv_nsec = ts_samples[1].tv_nsec - ts_samples[0].tv_nsec;
+
   for(s=2; s<SAMPLES; s++){
-    ts_avg =  ( (ts_samples[s]-ts_samples[s-1]) + ts_avg) /2;
+    ts_avg.tv_sec  =  ( (ts_samples[s].tv_sec - ts_samples[s-1].tv_sec ) + ts_avg.tv_sec ) /2;
+    ts_avg.tv_nsec =  ( (ts_samples[s].tv_nsec - ts_samples[s-1].tv_nsec ) + ts_avg.tv_nsec ) /2;
   }
 
   double calc_samp = 0, calc_error=0;
-  calc_samp = (1e9)/(ts_avg/256);
-  calc_error = 1e6-calc_samp;
+  calc_samp = ts_avg.tv_sec+(ts_avg.tv_nsec/1e9);
+  calc_samp = (calc_samp/256);
+  //calc_error = 1e6-calc_samp;
   
-  fprintf(stdout,"AVG Diff ns: %llu\n",ts_avg);
-  fprintf(stdout,"Calculated Sample Rate: %f\n",calc_samp);
-  fprintf(stdout,"Sample Rate Error: %f\n",calc_error);
+  fprintf(stdout,"AVG Diff s: %llu.%llu\n",ts_avg.tv_sec, ts_avg.tv_nsec);
+  //fprintf(stdout,"Calculated Sample Rate: %f\n",calc_samp);
+  //fprintf(stdout,"Sample Rate Error: %f\n",calc_error);
 }
 

@@ -37,8 +37,8 @@ import matplotlib as mpl
 #   change the center frequency (hold shift for finer control).
 # * Press "+" and "-" to control gain, and space to enable AGC.
 # * Type a frequency (in MHz) and press enter to directly change the center frequency
-SCAN_START = 800e6
-SCAN_END = 900e6
+SCAN_START = 400e6
+SCAN_END = 1000e6
 
 NFFT = 1024
 SAMP_RATE=2.6e6
@@ -107,14 +107,14 @@ class Waterfall(object):
                 self.image_buffer[0, (scan_num+idx)*NFFT: ((scan_num+idx)*NFFT)+NFFT] += 10*np.log10(psd_scan1)
                 self.image_buffer[0, (scan_num+idx)*NFFT: ((scan_num+idx)*NFFT)+NFFT] /= 2
 
-                
+                '''
                 #print(((scan_num+idx)*NFFT)+(NFFT/2), ((scan_num+idx)*NFFT)+(NFFT*1.5))
                 if ( ((scan_num+idx)*NFFT)+(NFFT*1.5) <= NUM_SCANS_PER_SWEEP*NFFT):
                     sdr.center_freq=center_freq+(SAMP_RATE/2)
                     psd_scan2, f = psd( sdr.read_samples(NUM_SAMPLES_PER_SCAN) , NFFT=NFFT) # estimate PSD for one scan
                     self.image_buffer[0, ((scan_num+idx)*NFFT)+(NFFT/2) : ((scan_num+idx)*NFFT)+(NFFT)+(NFFT/2)] += 10*np.log10(psd_scan2)
                     self.image_buffer[0, ((scan_num+idx)*NFFT)+(NFFT/2) : ((scan_num+idx)*NFFT)+(NFFT)+(NFFT/2)] /= 2
-                
+                '''  
         #Wait for all dongles to finish sweep
         # plot entire sweep
         self.image.set_array(self.image_buffer)
